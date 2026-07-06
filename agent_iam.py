@@ -42,46 +42,11 @@ from typing import Optional
 from seam7_delegation import Cap, Token, EffectiveClaims, verify, InvalidToken
 
 
-# --- ABAC: the discrete trust lattice (order matters; compare with >= / <) ----------
-class TrustTier(IntEnum):
-    UNATTESTED = 0        # scraped page, unauthenticated webhook, raw user upload
-    SELF_SIGNED = 1       # signed by the agent/workload itself
-    ORG_ATTESTED = 2      # signed by an approved org source (DB of record, attested API)
-    HUMAN_VOUCHED = 3     # a human/supervisor explicitly signed off on this source
-
-
-@dataclass(frozen=True)
-class ProvenanceRecord:
-    source_id: str
-    tier: TrustTier
-
-
-@dataclass
-class Manifest:
-    """The data lineage the agent reasoned on to reach this tool call."""
-    records: list = field(default_factory=list)
-
-    def min_tier(self) -> TrustTier:
-        # weakest link: context is only as vouched as its least-vouched input.
-        if not self.records:
-            return TrustTier.UNATTESTED
-        return TrustTier(min(r.tier for r in self.records))
-
-
-class ProvenanceResolver:
-    """
-    Decides the authoritative trust tier of a manifest. The default trusts the
-    manifest's self-reported tiers (fine for a demo). A persistence-backed resolver
-    (store.SqliteProvenance) IGNORES self-reported tiers and resolves each source_id
-    against a vouched-sources table -- so a caller cannot lie its way to a high tier.
-    """
-    def min_tier(self, manifest: "Manifest") -> TrustTier:  # pragma: no cover - interface
-        raise NotImplementedError
-
-
-class SelfReportedResolver(ProvenanceResolver):
-    def min_tier(self, manifest: "Manifest") -> TrustTier:
-        return manifest.min_tier()
+# --- ABAC: the data-provenance trust lattice now lives in provenance.py, re-exported
+#     here so existing imports (`from agent_iam import TrustTier, Manifest, ...`) keep working.
+from provenance import (                                                    # noqa: E402,F401
+    TrustTier, ProvenanceRecord, Manifest, ProvenanceResolver, SelfReportedResolver,
+)
 
 
 @dataclass(frozen=True)
