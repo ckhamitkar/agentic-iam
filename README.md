@@ -128,6 +128,18 @@ python3 detective.py           # out-of-band shadow triggers
 python3 seam7_delegation.py    # token attenuation + attack demo
 ```
 
+## Integrations
+
+- **MCP control-plane server** (`mcp_server.py`) — exposes `mint_root` / `attenuate` /
+  `vouch` / `authorize` / `verify` / `audit_query` as MCP tools over stdio JSON-RPC (pure
+  stdlib, no SDK dependency). Any MCP host can drive governance through it. Run: `python3
+  mcp_server.py`. This is the advisory/control-plane half.
+- **Claude Code PreToolUse hook** (`hooks/`) — the **unbypassable** enforcement point for
+  Claude agents: it runs before every tool call (the model can't skip it), maps
+  irreversible actions to `ask` (a human vouch = AARP `PENDING`), hard-denies catastrophic
+  ones, and hash-chains every decision to a tamper-evident audit. See
+  [`hooks/README.md`](hooks/README.md).
+
 ## Honest limitations
 
 - **`ed25519_ref.py` is a reference implementation** — not constant-time, ~ms/op. Swap

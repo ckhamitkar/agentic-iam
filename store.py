@@ -143,13 +143,16 @@ class DecisionAuditLog:
         prev = self._last_hash()
         root = decision.claims.accountable_root if decision.claims else None
         actor = decision.claims.actor if decision.claims else None
-        row_hash = self._row_hash(req.now, request_hash, decision.code, root, actor,
+        # Normalize ts to float so the hash matches on read-back from the REAL column
+        # (an int `now` would hash as "0" on write but "0.0" on verify -> false mismatch).
+        ts = float(req.now)
+        row_hash = self._row_hash(ts, request_hash, decision.code, root, actor,
                                   req.tool.name, prev)
         self.conn.execute(
             "INSERT INTO decision_audit"
             "(ts,request_hash,code,accountable_root,actor,tool,prev_hash,row_hash) "
             "VALUES(?,?,?,?,?,?,?,?)",
-            (req.now, request_hash, decision.code, root, actor, req.tool.name, prev, row_hash))
+            (ts, request_hash, decision.code, root, actor, req.tool.name, prev, row_hash))
         self.conn.commit()
         return row_hash
 
