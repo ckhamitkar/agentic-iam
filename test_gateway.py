@@ -14,6 +14,7 @@ from authn import keypair, prove
 from gateway import Gateway
 from issuer import Issuer
 from detective import ShadowMonitor, InjectionMarkerTrigger
+from containment import Contained, AutonomyLevel
 
 KEY = b"verifier-root-key"
 T0 = 1_000_000.0
@@ -193,6 +194,63 @@ class TestDetectiveOverGateway(unittest.TestCase):
         incidents = ShadowMonitor(triggers=[InjectionMarkerTrigger()]).sweep(gw.event_log)
         self.assertEqual(len(incidents), 1)
         self.assertEqual(incidents[0]["code"], "INJECTION_MARKER")
+
+
+def _node(level):
+    return Contained(name="c", spiffe_id="spiffe://td/agent/root/c", level=level)
+
+
+class TestContainmentInGateway(unittest.TestCase):
+    """The runtime (containment) layer and the crypto (authorize) layer, cooperating."""
+
+    def test_shadow_node_observes_but_does_not_execute(self):
+        store, gw, ran, tok = _fixture(holder_pk=None)      # bearer token, authorize will ALLOW
+        r = gw.invoke(tok, "write_record", Cap.WRITE, GOOD, T0, node=_node(AutonomyLevel.SHADOW))
+        self.assertFalse(r.executed)
+        self.assertEqual(r.code, "SHADOWED")                # authorize passed, but not run
+        self.assertEqual(ran, [])                           # the tool never fired
+        self.assertTrue(r.output["would_execute"])
+
+    def test_trusted_node_executes(self):
+        store, gw, ran, tok = _fixture(holder_pk=None)
+        r = gw.invoke(tok, "write_record", Cap.WRITE, GOOD, T0, node=_node(AutonomyLevel.TRUSTED))
+        self.assertTrue(r.executed)
+        self.assertEqual(ran, [1])
+
+    def test_reaped_node_is_denied(self):
+        store, gw, ran, tok = _fixture(holder_pk=None)
+        dead = _node(AutonomyLevel.TRUSTED)
+        dead.alive = False
+        r = gw.invoke(tok, "write_record", Cap.WRITE, GOOD, T0, node=dead)
+        self.assertFalse(r.executed)
+        self.assertEqual(r.code, "CONTAINED_DENY")
+        self.assertEqual(ran, [])
+
+    def test_graduated_trust_never_opens_the_irreversible_floor(self):
+        # A maximally TRUSTED node + an IRREVERSIBLE tool + merely ORG-attested data.
+        # The floor holds: authorize() denies on provenance, no matter how trusted the node.
+        store = Store(":memory:")
+        store.vouch("db-of-record", TrustTier.ORG_ATTESTED, "human:sup", at=T0)
+        gw = Gateway(store, KEY)
+        ran = []
+        delete_tool = Tool("delete_record", Cap.DELETE, TrustTier.HUMAN_VOUCHED,
+                           est_cost=1.0, reversible=False)         # irreversible => the floor
+        gw.register(delete_tool, lambda **kw: ran.append(1))
+        root = mint_root(KEY, "principal:mgr", Cap.ALL, ttl_expires=T0 + 3600,
+                         budget=10.0, difficulty=4)
+        store.register_principal(root, minted_at=T0)
+        tok = attenuate(root, caps=Cap.WRITE | Cap.DELETE, exp=T0 + 300, actor="a")
+        r = gw.invoke(tok, "delete_record", Cap.DELETE, GOOD, T0,
+                      node=_node(AutonomyLevel.TRUSTED))
+        self.assertFalse(r.executed)
+        self.assertEqual(r.code, "PROVENANCE")             # floor enforced by risk_floor
+        self.assertEqual(ran, [])
+        # and it clears only with a human-vouched source (the co-sign), still irreversible
+        human = Manifest([ProvenanceRecord("supervisor-signoff", TrustTier.HUMAN_VOUCHED)])
+        store.vouch("supervisor-signoff", TrustTier.HUMAN_VOUCHED, "human:sup", at=T0)
+        r2 = gw.invoke(tok, "delete_record", Cap.DELETE, human, T0,
+                       node=_node(AutonomyLevel.TRUSTED))
+        self.assertTrue(r2.executed)
 
 
 if __name__ == "__main__":

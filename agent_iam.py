@@ -55,6 +55,8 @@ class Tool:
     required_caps: Cap           # RBAC: what capabilities the tool needs
     risk_floor: TrustTier        # ABAC: min provenance tier to run it (founder-supplied gravity)
     est_cost: float = 0.0        # budget units this call is estimated to consume
+    reversible: bool = True      # gravity/reversibility classifier: False => the floor —
+                                 # always gated, never granted by graduated trust
 
 
 @dataclass

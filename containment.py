@@ -116,6 +116,34 @@ class SimRuntime(Runtime):
         self.killed.append(node.spiffe_id)
 
 
+def verdict_for(node: Contained, *, reversible: bool, sampled: bool = False) -> Verdict:
+    """The runtime verdict for an action, BEFORE the crypto/authorize() gate. Standalone
+    so the gateway can call it without a manager. The irreversible floor is always gated;
+    reversible reach follows the node's autonomy level."""
+    if not node.alive:
+        return Verdict.DENY
+    if not reversible:
+        return Verdict.GATE                           # the floor: trust is irrelevant
+    g = node.profile.gating
+    if g == Gating.OBSERVE:
+        return Verdict.OBSERVE_ONLY                    # shadow mode
+    if g == Gating.GATE_EACH:
+        return Verdict.GATE
+    if g == Gating.SAMPLE:
+        return Verdict.GATE if sampled else Verdict.EXECUTE
+    return Verdict.EXECUTE                             # MINIMAL
+
+
+def attenuate_to_level(parent_token, node: Contained, now: float, holder: str = None):
+    """Shape a child's capability TOKEN from its containment level: caps are narrowed to
+    the level's ceiling and the TTL to the level's window. This is the crypto layer being
+    shaped by the runtime layer -- as the child graduates, re-issue a wider token."""
+    from seam7_delegation import attenuate
+    prof = node.profile
+    return attenuate(parent_token, caps=prof.caps_ceiling, exp=now + prof.ttl_seconds,
+                     actor=node.spiffe_id, holder=holder)
+
+
 class ContainmentManager:
     def __init__(self, runtime: Runtime = None):
         self.runtime = runtime or SimRuntime()
@@ -166,20 +194,7 @@ class ContainmentManager:
             node.streak = 0
 
     def may_execute(self, node: Contained, *, reversible: bool, sampled: bool = False) -> Verdict:
-        """The runtime verdict for an action, BEFORE the crypto/authorize() gate.
-        The irreversible floor is always gated; reversible reach follows the level."""
-        if not node.alive:
-            return Verdict.DENY
-        if not reversible:
-            return Verdict.GATE                           # the floor: trust is irrelevant
-        g = node.profile.gating
-        if g == Gating.OBSERVE:
-            return Verdict.OBSERVE_ONLY                    # shadow mode
-        if g == Gating.GATE_EACH:
-            return Verdict.GATE
-        if g == Gating.SAMPLE:
-            return Verdict.GATE if sampled else Verdict.EXECUTE
-        return Verdict.EXECUTE                             # MINIMAL
+        return verdict_for(node, reversible=reversible, sampled=sampled)
 
 
 # ----------------------------------------------------------------------------------

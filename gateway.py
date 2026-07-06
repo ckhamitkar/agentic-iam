@@ -13,7 +13,12 @@ tool is through invoke(), which:
      effect (so a failed auth never charges budget).
   2. AUTHZ (the PDP) -- store.authorize() runs the 5 deterministic checks, charges
      budget only on ALLOW, and appends to the tamper-evident audit log.
-  3. EXECUTE -- only on ALLOW + valid PoP does the real callable fire, once.
+  2.5 CONTAINMENT (optional runtime layer) -- if an acting `node` (containment.Contained)
+     is supplied, its autonomy level decides whether the authorized action may actually
+     EXECUTE: a node in SHADOW observes only (recorded, not run); a reaped node is denied.
+     The irreversible floor is unaffected -- it was already enforced by the tool's
+     risk_floor, and no autonomy level's ceiling grants floor capabilities.
+  3. EXECUTE -- only on ALLOW (+ valid PoP, + a non-shadow node) does the callable fire.
 
 A replayed (challenge, proof) pair fails because every invoke() mints a new challenge.
 
@@ -28,13 +33,14 @@ from agent_iam import Request
 from authn import verify_pop
 from issuer import verify_attestation
 from detective import Event
+from containment import Verdict, verdict_for
 
 
 @dataclass
 class Result:
     executed: bool
-    code: str          # EXECUTED | IDENTITY | AUTHENTICATION | CAPABILITY | PURPOSE |
-                       # PROVENANCE | BUDGET | UNKNOWN_TOOL
+    code: str          # EXECUTED | SHADOWED | CONTAINED_DENY | IDENTITY | AUTHENTICATION |
+                       # CAPABILITY | PURPOSE | PROVENANCE | BUDGET | UNKNOWN_TOOL
     reason: str
     output: object = None
 
@@ -75,7 +81,8 @@ class Gateway:
             repr(sorted(body.items())).encode()).hexdigest()[:12]
         self.store.sink.emit(body)
 
-    def invoke(self, token, tool_name, purpose, manifest, now, signer=None, **kwargs) -> Result:
+    def invoke(self, token, tool_name, purpose, manifest, now, signer=None,
+               node=None, sampled=False, **kwargs) -> Result:
         if tool_name not in self._tools:
             return Result(False, "UNKNOWN_TOOL", f"no such tool {tool_name!r}")
         tool, fn = self._tools[tool_name]
@@ -134,6 +141,22 @@ class Gateway:
         if not decision.allowed:
             _log(decision.code, decision.claims)
             return Result(False, decision.code, decision.reason)
+
+        # --- 2.5 CONTAINMENT (runtime layer): the authorize() floor passed; the acting
+        #     node's autonomy level now decides whether it may actually EXECUTE. A node in
+        #     SHADOW observes only -- the would-be action is recorded but NOT run. (The
+        #     irreversible floor was already enforced by the tool's risk_floor above, and
+        #     no autonomy level's ceiling grants floor caps.)
+        if node is not None:
+            verdict = verdict_for(node, reversible=tool.reversible, sampled=sampled)
+            if verdict == Verdict.DENY:
+                _log("CONTAINED_DENY", decision.claims)
+                return Result(False, "CONTAINED_DENY", "acting node is reaped / not runnable")
+            if verdict == Verdict.OBSERVE_ONLY:
+                _log("SHADOWED", decision.claims)
+                return Result(False, "SHADOWED",
+                              f"node in SHADOW — authorize()={decision.code}, recorded but NOT executed",
+                              output={"would_execute": True})
 
         # --- 3. EXECUTE -- the only path to the real callable. -------------------------
         output = fn(**kwargs)
