@@ -87,7 +87,7 @@ class TestEnforcement(unittest.TestCase):
         r = gw.invoke(tok, "write_record", Cap.WRITE, bad, T0,
                       signer=lambda c: prove(sk, pk, c))
         self.assertFalse(r.executed)
-        self.assertEqual(r.code, "PROVENANCE")
+        self.assertEqual(r.code, "PENDING")     # AARP: approvable via a vouch, not a flat deny
         self.assertEqual(ran, [])
 
     def test_unknown_tool_is_not_invocable(self):
@@ -143,8 +143,8 @@ class TestAttestedIssuance(unittest.TestCase):
         store.register_principal(root, minted_at=T0)
         tok = attenuate(root, caps=Cap.WRITE, exp=T0 + 300, actor="a", holder=holder_pk)
         if enroll:
-            store.enroll(issuer.attest("principal:mgr", att_holder or holder_pk,
-                                       att_caps, not_after=None))
+            svid = issuer.issue_svid("principal:mgr", att_holder or holder_pk, not_after=None)
+            store.enroll(svid, att_caps)     # att_caps = the AuthZEN role grant (not signed)
         return store, gw, ran, tok
 
     def test_attested_holder_executes(self):
@@ -243,7 +243,9 @@ class TestContainmentInGateway(unittest.TestCase):
         r = gw.invoke(tok, "delete_record", Cap.DELETE, GOOD, T0,
                       node=_node(AutonomyLevel.TRUSTED))
         self.assertFalse(r.executed)
-        self.assertEqual(r.code, "PROVENANCE")             # floor enforced by risk_floor
+        # AARP: the irreversible floor holds -- PENDING a human vouch (the co-sign),
+        # never auto-granted by the node's TRUSTED level.
+        self.assertEqual(r.code, "PENDING")
         self.assertEqual(ran, [])
         # and it clears only with a human-vouched source (the co-sign), still irreversible
         human = Manifest([ProvenanceRecord("supervisor-signoff", TrustTier.HUMAN_VOUCHED)])

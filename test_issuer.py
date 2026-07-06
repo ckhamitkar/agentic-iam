@@ -1,47 +1,55 @@
 #!/usr/bin/env python3
-"""Tests for the attested-issuance authority. Pure stdlib unittest, deterministic."""
+"""Tests for the SPIFFE-style identity issuer (SVID). Pure stdlib unittest, deterministic."""
 
 import unittest
 
-from seam7_delegation import Cap
-from issuer import Issuer, verify_attestation
+from issuer import Issuer, SVID, verify_svid, make_spiffe_id
 
 SEED = b"\xaa" * 32
 T0 = 1_000_000.0
 
 
-class TestAttestation(unittest.TestCase):
+class TestSVID(unittest.TestCase):
     def setUp(self):
-        self.issuer = Issuer(SEED)
+        self.issuer = Issuer(SEED, trust_domain="axionaiapps.com")
 
-    def test_valid_attestation_verifies(self):
-        att = self.issuer.attest("principal:mgr", "deadbeef", Cap.READ | Cap.WRITE,
-                                 not_after=T0 + 100)
-        self.assertTrue(verify_attestation(att, now=T0))
+    def test_make_spiffe_id(self):
+        self.assertEqual(make_spiffe_id("axionaiapps.com", "agent/mgr"),
+                         "spiffe://axionaiapps.com/agent/mgr")
 
-    def test_tampered_caps_rejected(self):
-        att = self.issuer.attest("principal:mgr", "deadbeef", Cap.READ, not_after=None)
-        forged = att.__class__(att.root_id, att.holder, int(Cap.ALL), att.not_after,
-                               att.issuer, att.sig)          # bump caps, keep old sig
-        self.assertFalse(verify_attestation(forged, now=T0))
+    def test_valid_svid_verifies(self):
+        sid = make_spiffe_id("axionaiapps.com", "agent/mgr")
+        svid = self.issuer.issue_svid(sid, "deadbeef", not_after=T0 + 100)
+        self.assertTrue(verify_svid(svid, now=T0))
+        self.assertEqual(svid.trust_domain, "axionaiapps.com")
+
+    def test_svid_is_identity_only_no_capabilities(self):
+        svid = self.issuer.issue_svid("spiffe://td/agent/x", "aa", not_after=None)
+        self.assertFalse(hasattr(svid, "caps"))     # WHO, never WHAT
+
+    def test_tampered_holder_rejected(self):
+        svid = self.issuer.issue_svid("spiffe://td/agent/x", "aaaa")
+        forged = SVID(svid.spiffe_id, "bbbb", svid.not_after, svid.trust_domain,
+                      svid.issuer, svid.sig)          # swap the bound holder
+        self.assertFalse(verify_svid(forged, now=T0))
+
+    def test_tampered_spiffe_id_rejected(self):
+        svid = self.issuer.issue_svid("spiffe://td/agent/x", "aa")
+        forged = SVID("spiffe://td/agent/attacker", svid.holder, svid.not_after,
+                      svid.trust_domain, svid.issuer, svid.sig)
+        self.assertFalse(verify_svid(forged, now=T0))
 
     def test_wrong_issuer_key_rejected(self):
-        att = self.issuer.attest("principal:mgr", "deadbeef", Cap.READ, not_after=None)
+        svid = self.issuer.issue_svid("spiffe://td/agent/x", "aa")
         other = Issuer(b"\xbb" * 32)
-        forged = att.__class__(att.root_id, att.holder, att.caps, att.not_after,
-                               other.public_key, att.sig)    # claim a different issuer
-        self.assertFalse(verify_attestation(forged, now=T0))
+        forged = SVID(svid.spiffe_id, svid.holder, svid.not_after, svid.trust_domain,
+                      other.public_key, svid.sig)     # claim a different CA
+        self.assertFalse(verify_svid(forged, now=T0))
 
-    def test_expired_attestation_rejected(self):
-        att = self.issuer.attest("principal:mgr", "deadbeef", Cap.READ, not_after=T0 + 10)
-        self.assertTrue(verify_attestation(att, now=T0))
-        self.assertFalse(verify_attestation(att, now=T0 + 20))
-
-    def test_holder_binding_is_signed(self):
-        att = self.issuer.attest("principal:mgr", "aaaa", Cap.READ, not_after=None)
-        forged = att.__class__(att.root_id, "bbbb", att.caps, att.not_after,
-                               att.issuer, att.sig)          # swap the bound holder
-        self.assertFalse(verify_attestation(forged, now=T0))
+    def test_expired_svid_rejected(self):
+        svid = self.issuer.issue_svid("spiffe://td/agent/x", "aa", not_after=T0 + 10)
+        self.assertTrue(verify_svid(svid, now=T0))
+        self.assertFalse(verify_svid(svid, now=T0 + 20))
 
 
 if __name__ == "__main__":

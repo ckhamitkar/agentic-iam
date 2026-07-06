@@ -180,22 +180,33 @@ class Store:
     def vouch(self, *a, **kw):
         self.provenance.vouch(*a, **kw)
 
-    def enroll(self, att):
-        """Persist an issuer attestation -- the attested-issuance record for a principal."""
+    def enroll(self, svid, role_caps):
+        """Persist a SPIFFE SVID (identity) + a role grant (the caps ceiling, held as
+        AuthZEN policy -- NOT part of the signed identity document)."""
         self.conn.execute(
             "INSERT OR REPLACE INTO identity_attestation"
-            "(root_id,holder,caps,not_after,issuer,sig,enrolled_at) VALUES(?,?,?,?,?,?,?)",
-            (att.root_id, att.holder, att.caps, att.not_after, att.issuer, att.sig, 0.0))
+            "(root_id,holder,caps,not_after,trust_domain,issuer,sig,enrolled_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (svid.spiffe_id, svid.holder, int(role_caps), svid.not_after,
+             svid.trust_domain, svid.issuer, svid.sig, 0.0))
         self.conn.commit()
 
-    def attestation_for(self, root_id):
-        from issuer import Attestation
+    def svid_for(self, spiffe_id):
+        """Return the SPIFFE SVID (identity) for a principal, or None."""
+        from issuer import SVID
         r = self.conn.execute(
-            "SELECT * FROM identity_attestation WHERE root_id=?", (root_id,)).fetchone()
+            "SELECT * FROM identity_attestation WHERE root_id=?", (spiffe_id,)).fetchone()
         if not r:
             return None
-        return Attestation(r["root_id"], r["holder"], r["caps"], r["not_after"],
-                           r["issuer"], r["sig"])
+        return SVID(r["root_id"], r["holder"], r["not_after"], r["trust_domain"],
+                    r["issuer"], r["sig"])
+
+    def role_ceiling(self, spiffe_id):
+        """The AuthZEN role grant: the max capabilities policy allows this identity."""
+        from seam7_delegation import Cap
+        r = self.conn.execute(
+            "SELECT caps FROM identity_attestation WHERE root_id=?", (spiffe_id,)).fetchone()
+        return Cap(r["caps"]) if r else Cap.NONE
 
     def register_tool(self, tool):
         self.conn.execute(

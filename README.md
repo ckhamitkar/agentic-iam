@@ -142,6 +142,14 @@ python3 seam7_delegation.py    # token attenuation + attack demo
 - **The proof-of-work mint is one admissible anti-Sybil cost-source**, not the only one; the
   right source (authority mint vs device attestation) is a deployment decision.
 
+## Standards alignment
+
+This library **adopts the emerging agent-identity standards where they exist and adds the
+few things they don't** — SPIFFE (identity), OIDF AuthZEN + AARP (authorization + approval),
+OIDF OBO (delegation), Certificate-Transparency-style audit, aligned with CoSAI. The novel
+layers are offline capability tokens, data-provenance tiers, and graduated-autonomy
+containment. Full mapping (adopt vs. novel, module by module) in **[STANDARDS.md](STANDARDS.md)**.
+
 ## Provenance
 
 Extracted from the **[agent-law](https://github.com/ckhamitkar/agent-law)** research project.

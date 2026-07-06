@@ -35,8 +35,8 @@ Pure stdlib, deterministic.
 
 import hashlib
 import json
-from dataclasses import dataclass, field
-from enum import IntEnum
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 from seam7_delegation import Cap, Token, EffectiveClaims, verify, InvalidToken
@@ -69,13 +69,25 @@ class Request:
 
 
 # --- decision + triage --------------------------------------------------------------
+class AccessState(str, Enum):
+    """AuthZEN-style decision states. PENDING is the AARP case: policy cannot authorize
+    YET because a prerequisite (here, a human vouch of a data source) must first be
+    satisfied. It is a shift in shape, not authority -- not a bypass of the floor."""
+    PERMIT = "PERMIT"
+    DENY = "DENY"
+    PENDING = "PENDING"
+
+
 @dataclass(frozen=True)
 class Decision:
-    allowed: bool
+    allowed: bool                # True only for PERMIT (kept for backward compatibility)
     code: str                    # ALLOW | IDENTITY | CAPABILITY | PURPOSE | PROVENANCE | BUDGET
     reason: str
     claims: Optional[EffectiveClaims] = None
     triage: Optional[dict] = None
+    state: AccessState = AccessState.DENY
+    prerequisite: Optional[str] = None    # AARP: what must be satisfied (e.g. a vouch)
+    request_handle: Optional[str] = None  # AARP: re-evaluate against this after the vouch
 
 
 class SpendLedger:
@@ -135,7 +147,28 @@ def authorize(req: Request, root_secret: bytes, ledger: SpendLedger,
         packet = _triage_packet(code, req, claims, reason, actual_tier)
         if sink is not None:
             sink.emit(packet)
-        return Decision(False, code, reason, claims=claims, triage=packet)
+        return Decision(False, code, reason, claims=claims, triage=packet,
+                        state=AccessState.DENY)
+
+    def pending(code, reason, prerequisite, claims):
+        # AARP: the action is approvable -- a prerequisite (a vouch) must be met first.
+        handle = "req-" + hashlib.sha256(json.dumps({
+            "root": claims.accountable_root if claims else None,
+            "actor": claims.actor if claims else None,
+            "tool": req.tool.name,
+            "sources": sorted(r.source_id for r in req.manifest.records),
+            "now": req.now,
+        }, sort_keys=True).encode()).hexdigest()[:12]
+        packet = _triage_packet(code, req, claims,
+                                f"{reason} | prerequisite: {prerequisite}", actual_tier)
+        packet["state"] = "PENDING"
+        packet["prerequisite"] = prerequisite
+        packet["request_handle"] = handle
+        if sink is not None:
+            sink.emit(packet)
+        return Decision(False, code, reason, claims=claims, triage=packet,
+                        state=AccessState.PENDING, prerequisite=prerequisite,
+                        request_handle=handle)
 
     # 1. IDENTITY -- the token must verify (sig chain + PoW + TTL).
     try:
@@ -160,10 +193,16 @@ def authorize(req: Request, root_secret: bytes, ledger: SpendLedger,
 
     # 4. ABAC -- the data lineage's weakest link must meet the tool's trust floor.
     #    actual_tier was resolved up top (DB-authoritative when a store resolver is used).
+    #    AARP: this failure is APPROVABLE -- a human can vouch the source -- so it is
+    #    PENDING (routed to triage for a vouch), not a flat DENY. The other checks
+    #    (identity/RBAC/PBAC/budget) are structural and stay hard DENY.
     if actual_tier < req.tool.risk_floor:
-        return deny("PROVENANCE",
-                    f"data lineage tier {actual_tier.name} < required {req.tool.risk_floor.name} "
-                    f"(acting on unvouched data)", claims)
+        sources = sorted({r.source_id for r in req.manifest.records}) or ["(no sources)"]
+        prereq = (f"vouch data source(s) {sources} to at least "
+                  f"{req.tool.risk_floor.name} (currently {actual_tier.name})")
+        return pending("PROVENANCE",
+                       f"data lineage tier {actual_tier.name} < required "
+                       f"{req.tool.risk_floor.name}", prereq, claims)
 
     # 5. BUDGET -- cumulative spend for the accountable root + this call <= ceiling.
     if ledger.spent(claims.accountable_root) + req.tool.est_cost > claims.budget:
@@ -173,7 +212,8 @@ def authorize(req: Request, root_secret: bytes, ledger: SpendLedger,
 
     # 6. ALLOW.
     ledger.charge(claims.accountable_root, req.tool.est_cost)
-    return Decision(True, "ALLOW", "all checks passed", claims=claims)
+    return Decision(True, "ALLOW", "all checks passed", claims=claims,
+                    state=AccessState.PERMIT)
 
 
 # ----------------------------------------------------------------------------------

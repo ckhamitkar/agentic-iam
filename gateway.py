@@ -29,9 +29,9 @@ import hashlib
 from dataclasses import dataclass
 
 from seam7_delegation import Cap, verify, InvalidToken
-from agent_iam import Request
+from agent_iam import Request, AccessState
 from authn import verify_pop
-from issuer import verify_attestation
+from issuer import verify_svid
 from detective import Event
 from containment import Verdict, verdict_for
 
@@ -39,8 +39,8 @@ from containment import Verdict, verdict_for
 @dataclass
 class Result:
     executed: bool
-    code: str          # EXECUTED | SHADOWED | CONTAINED_DENY | IDENTITY | AUTHENTICATION |
-                       # CAPABILITY | PURPOSE | PROVENANCE | BUDGET | UNKNOWN_TOOL
+    code: str          # EXECUTED | SHADOWED | CONTAINED_DENY | PENDING | IDENTITY |
+                       # AUTHENTICATION | CAPABILITY | PURPOSE | BUDGET | UNKNOWN_TOOL
     reason: str
     output: object = None
 
@@ -104,21 +104,23 @@ class Gateway:
             _log("IDENTITY", None)
             return Result(False, "IDENTITY", f"token invalid: {e}")
 
-        # 1a. attested issuance -- identity must be vouched by a trusted issuer.
+        # 1a. SPIFFE identity -- the principal must present a valid SVID from a trusted CA
+        #     (identity), AND the token's caps must be within the AuthZEN role grant for
+        #     that identity (authorization). Identity and authorization are separate.
         if self.trusted_issuers:
-            att = self.store.attestation_for(claims0.accountable_root)
-            if att is None or att.issuer not in self.trusted_issuers or not verify_attestation(att, now=now):
-                self._emit_authn_incident(claims0, tool, now, "principal not attested by a trusted issuer")
+            svid = self.store.svid_for(claims0.accountable_root)
+            if svid is None or svid.issuer not in self.trusted_issuers or not verify_svid(svid, now=now):
+                self._emit_authn_incident(claims0, tool, now, "no valid SVID from a trusted issuer")
                 _log("IDENTITY", claims0)
-                return Result(False, "IDENTITY", "unattested principal (no valid issuer attestation)")
-            if att.holder != claims0.holder:
-                self._emit_authn_incident(claims0, tool, now, "holder does not match attested identity")
+                return Result(False, "IDENTITY", "unattested principal (no valid SVID)")
+            if svid.holder != claims0.holder:
+                self._emit_authn_incident(claims0, tool, now, "holder does not match the SVID")
                 _log("AUTHENTICATION", claims0)
-                return Result(False, "AUTHENTICATION", "holder key does not match the attested identity")
-            if (claims0.caps & Cap(att.caps)) != claims0.caps:
-                self._emit_authn_incident(claims0, tool, now, "token caps exceed attested ceiling")
+                return Result(False, "AUTHENTICATION", "holder key does not match the SVID identity")
+            if (claims0.caps & self.store.role_ceiling(claims0.accountable_root)) != claims0.caps:
+                self._emit_authn_incident(claims0, tool, now, "token caps exceed the role grant")
                 _log("CAPABILITY", claims0)
-                return Result(False, "CAPABILITY", "token capabilities exceed the attested ceiling")
+                return Result(False, "CAPABILITY", "token capabilities exceed the role grant")
 
         # 1b. proof-of-possession -- the presenter must hold the bound private key.
         if claims0.holder is not None:                           # holder-bound => PoP required
@@ -139,6 +141,11 @@ class Gateway:
         decision = self.store.authorize(Request(token, tool, purpose, manifest, now),
                                         self.root_secret)
         if not decision.allowed:
+            if decision.state == AccessState.PENDING:
+                # AARP: approvable, not refused -- route to a vouch and re-evaluate.
+                _log("PENDING", decision.claims)
+                return Result(False, "PENDING",
+                              f"{decision.reason} — needs: {decision.prerequisite}")
             _log(decision.code, decision.claims)
             return Result(False, decision.code, decision.reason)
 

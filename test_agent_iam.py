@@ -9,7 +9,7 @@ import unittest
 from seam7_delegation import Cap, mint_root, attenuate
 from agent_iam import (
     TrustTier, ProvenanceRecord, Manifest, Tool, Request,
-    SpendLedger, InMemorySink, authorize,
+    SpendLedger, InMemorySink, authorize, AccessState,
 )
 
 KEY = b"verifier-root-key"
@@ -151,6 +151,29 @@ class TestTriageEmission(unittest.TestCase):
         self.assertEqual(p["code"], "PROVENANCE")
         self.assertEqual(p["accountable_root"], "principal:root")
         self.assertTrue(p["incident_id"].startswith("inc-"))
+
+
+class TestAARP(unittest.TestCase):
+    """AuthZEN AARP: a provenance failure is APPROVABLE (PENDING a vouch), not a flat deny;
+    structural failures stay hard DENY."""
+
+    def test_provenance_failure_is_pending_with_a_prerequisite(self):
+        d = authorize(Request(_child(), WRITE_TOOL, Cap.WRITE, UNVOUCHED, T0), KEY, SpendLedger())
+        self.assertFalse(d.allowed)
+        self.assertEqual(d.state, AccessState.PENDING)
+        self.assertEqual(d.code, "PROVENANCE")
+        self.assertIsNotNone(d.prerequisite)         # names the vouch needed
+        self.assertIsNotNone(d.request_handle)       # re-evaluate against this after the vouch
+
+    def test_structural_failures_stay_hard_deny(self):
+        child = _child(caps=Cap.READ)                # lacks WRITE -> RBAC, not approvable
+        d = authorize(Request(child, WRITE_TOOL, Cap.WRITE, VOUCHED, T0), KEY, SpendLedger())
+        self.assertEqual(d.state, AccessState.DENY)
+
+    def test_permit_state_on_allow(self):
+        d = authorize(Request(_child(), WRITE_TOOL, Cap.WRITE, VOUCHED, T0), KEY, SpendLedger())
+        self.assertTrue(d.allowed)
+        self.assertEqual(d.state, AccessState.PERMIT)
 
 
 if __name__ == "__main__":

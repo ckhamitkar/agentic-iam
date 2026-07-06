@@ -40,21 +40,22 @@ CREATE TABLE principal (
 );
 
 -- ----------------------------------------------------------------------------
--- 1b. identity_attestation -- the ATTESTED-ISSUANCE record.  backs: issuer.Issuer
---    A principal's identity is only real if a TRUSTED ISSUER (an ed25519 CA)
---    attested it: it binds root_id <-> holder public key <-> a capability ceiling,
---    signed with the issuer's private key. The verifier trusts the issuer's PUBLIC
---    key only. This replaces "trust the root_id string" -- identity is now attested,
---    not self-asserted. (enrollment / SPIFFE-SVID analogue.)
+-- 1b. identity_attestation -- the SPIFFE SVID record + the role grant.  backs: issuer.SVID
+--    SPIFFE/AuthZEN separation: the SIGNED columns (root_id=spiffe_id, holder,
+--    not_after, trust_domain, issuer, sig) are the SVID -- identity only, attested by a
+--    trusted CA (verifier holds the issuer PUBLIC key only). The `caps` column is NOT
+--    part of the signed identity; it is the AuthZEN ROLE GRANT (the authorization
+--    ceiling) held as policy and evaluated separately by the gateway.
 -- ----------------------------------------------------------------------------
 CREATE TABLE identity_attestation (
-    root_id     TEXT PRIMARY KEY REFERENCES principal(root_id),
-    holder      TEXT NOT NULL,             -- holder pubkey hex bound to this identity
-    caps        INTEGER NOT NULL,          -- attested capability CEILING (Cap bitmask)
-    not_after   REAL,                      -- attestation expiry (NULL = none)
-    issuer      TEXT NOT NULL,             -- issuer pubkey hex (the trust anchor)
-    sig         TEXT NOT NULL,             -- ed25519 signature over the identity claim
-    enrolled_at REAL NOT NULL
+    root_id      TEXT PRIMARY KEY REFERENCES principal(root_id),  -- the SPIFFE ID
+    holder       TEXT NOT NULL,            -- holder pubkey hex bound to this identity
+    caps         INTEGER NOT NULL,         -- ROLE GRANT: authorization ceiling (NOT signed)
+    not_after    REAL,                     -- SVID expiry (NULL = none)
+    trust_domain TEXT,                     -- SPIFFE trust domain
+    issuer       TEXT NOT NULL,            -- CA pubkey hex (the trust anchor / bundle)
+    sig          TEXT NOT NULL,            -- ed25519 signature over the SVID identity claim
+    enrolled_at  REAL NOT NULL
 );
 
 -- ----------------------------------------------------------------------------
