@@ -1,7 +1,7 @@
 # agentic-iam
 
 **Deterministic authentication, authorization, and accounting for hierarchies of AI agents.**
-Zero third-party dependencies. Zero LLM in the enforcement path. 66 passing tests.
+Zero third-party dependencies. Zero LLM in the enforcement path. 99 passing tests.
 
 When agents spawn agents and call tools on data of varying trustworthiness, classic IAM
 (static service-account keys) breaks: an agent that reads a poisoned web page can trigger a
@@ -122,7 +122,7 @@ print(gw.invoke(tok, "write_record", Cap.WRITE, good, now, signer=None).code)  #
 ## Run it
 
 ```bash
-python3 -m unittest            # 66 tests
+python3 -m unittest            # 99 tests
 python3 gateway.py             # end-to-end demo (theft + enforcement)
 python3 detective.py           # out-of-band shadow triggers
 python3 seam7_delegation.py    # token attenuation + attack demo
